@@ -57,11 +57,11 @@ impl fmt::Display for RCONError {
                     size, MAX_OUTGOING_PAYLOAD
                 )
             }
-            Self::BadPayload(err) => err.fmt(f),
+            Self::BadPayload(_) => write!(f, "Bad payload"),
             Self::IDMismatch => {
                 write!(f, "The ID of the packet received from the server does not match the ID of the sent packet.")
             }
-            Self::IO(err) => err.fmt(f),
+            Self::IO(_) => write!(f, "IO error"),
         }
     }
 }
@@ -72,7 +72,7 @@ impl Error for RCONError {
         match self {
             Self::IO(err) => Some(err),
             Self::BadPayload(err) => Some(err),
-            other => Some(other),
+            _ => None,
         }
     }
 }
