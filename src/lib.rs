@@ -1,4 +1,20 @@
-use rand;
+#![warn(missing_docs)]
+//! `mcrcon` is a client-side implementation of the RCON protocol for Minecraft servers, as described [here](https://wiki.vg/RCON).
+//! It allows you to write Rust code which can remotely execute commands on Minecraft servers.
+//! 
+//! # Example
+//! ```rust
+//! use mcrcon;
+//! 
+//! fn main() -> Result<(), mcrcon::RCONError> {
+//!     let mut stream = std::net::TcpStream::new("localhost:25575")?;
+//!     let mut connection = mcrcon::Connection::connect(stream, "password".to_string())?;
+//!     let resp = connection.command("seed".to_string())?;
+//! 
+//!     println!("{}", resp.payload);
+//! }
+//! ```
+
 use std::convert::TryInto;
 use std::error::Error;
 use std::fmt;
@@ -13,37 +29,36 @@ use std::{
 const MAX_INCOMING_PAYLOAD: usize = 4096;
 const MAX_OUTGOING_PAYLOAD: usize = 1446;
 
-// Possible errors when using the library.
+/// An RCON error.
 #[derive(Debug)]
 pub enum RCONError {
-    // Authenticating a connection failed.
+    /// Represents either an authentication failure when attempting to create a connection with `Connection::connect`,
+    /// or a command sent to the server with `Connection::command` failing to execute due to the connection not being authenticated.
     AuthFail,
-    // A packet (either created or received) has a disallowed size.
-    // That means either the specified size was above the max allowed size or was negative.
+    /// Represents either a client attempt to create or send a packet with a payload larger than 1446 bytes,
+    /// or a read packet having a size less than 10 or greater than 4110 bytes.
     BadSize(usize),
-    // The payload of a packet could not be converted into a valid UTF-8 string.
+    /// Represents a packet whose payload is not a valid UTF-8 encoded string.
     BadPayload(string::FromUtf8Error),
-    // The ID of a response packet does not match the ID of the sent command.
+    /// Represents the ID of a response packet sent by the server not matching the ID of the sent packet.
+    /// If running a command with `Connection::command` returns an `IDMismatch`, there is no guarantee as to whether or not the command has been run.
     IDMismatch,
-    // Some kind of IO error, probably failure to read to or write to the connection.
+    /// Represents a failure to write to or read from a given connection.
     IO(io::Error),
 }
 
-// io::Error needs to be able to be turned into an RCONError.
 impl From<io::Error> for RCONError {
     fn from(error: io::Error) -> Self {
         Self::IO(error)
     }
 }
 
-// string::FromUtf8Error means that the payload was not a valid UTF-8 string.
 impl From<string::FromUtf8Error> for RCONError {
     fn from(error: string::FromUtf8Error) -> Self {
         Self::BadPayload(error)
     }
 }
 
-// Display all of our various errors.
 impl fmt::Display for RCONError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -66,7 +81,6 @@ impl fmt::Display for RCONError {
     }
 }
 
-// impl Error for our custom error type.
 impl Error for RCONError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
@@ -77,31 +91,35 @@ impl Error for RCONError {
     }
 }
 
-// A custom Result type to save the trouble of typing Result<T, RCONError> over and over.
+/// A custom Result type to save the trouble of typing Result<T, RCONError> over and over.
 type Result<T> = std::result::Result<T, RCONError>;
 
-// All of the possible packet types. In-memory representation is i32 to simplify packet creation.
+/// All of the possible packet types. In-memory representation is i32 to simplify packet creation.
 #[repr(i32)]
-pub enum PacketType {
+enum PacketType {
+    /// Represents a packet received from the server after a Command packet is sent on a non-authenticated stream.
     AuthFail = -1,
+    /// Represents a response packet received in response to a successfully executed Command packet.
     Response = 0,
+    /// Represents a commmand sent to the server. The server packet confirming that authentication succeeded is also a Command packet.
     Command = 2,
+    /// Represents a packet sent to the server to authenticate the connection.
     Login = 3,
 }
 
-// A packet, which can be sent to or received from the server.
-// Packets must also include their size, but this is automatically calculated.
+/// A packet received from the server.
 #[derive(Debug, PartialEq)]
 pub struct Packet {
     id: i32,
     packet_type: i32,
+    /// The server's response to the executed command.
     pub payload: String,
 }
 
 impl Packet {
-    // Create a new packet with a given type and payload. id is random.
-    // Will return Err(PayloadTooLarge) if the length of the payload exceeds 1446 bytes.
-    pub fn new(packet_type: PacketType, payload: String) -> Result<Self> {
+    /// Create a new packet with a given type and payload, and a random id.
+    /// Will return Err(PayloadTooLarge) if the length of the payload exceeds 1446 bytes.
+    fn new(packet_type: PacketType, payload: String) -> Result<Self> {
         if payload.len() <= MAX_OUTGOING_PAYLOAD {
             Ok(Self {
                 id: rand::random(),
@@ -113,18 +131,18 @@ impl Packet {
         }
     }
 
-    // Calculate the size of a packet, including bytes for id, packet type, and padding.
-    // Since payload can be changed after instantiation, check that payload still has a valid length.
+    /// Calculate the size of a packet, including bytes for id, packet type, and padding.
+    /// Since payload can be changed after instantiation, check that payload still has a valid length.
     fn size(&self) -> Result<i32> {
         if self.payload.len() <= MAX_OUTGOING_PAYLOAD {
-            // The cast from usize to i32 is always safe, since we know here that the payload is at most 1446 bytes.
+            // The cast from usize to i32 is always safe, since we know here that the length of the payload is in [0, 1446].
             Ok(self.payload.len() as i32 + 10)
         } else {
             Err(RCONError::BadSize(self.payload.len()))
         }
     }
 
-    // Construct a copy of the packet that the server will respond with on authentication success.
+    /// Construct a copy of the packet that the server will respond with on authentication success.
     fn auth_success_packet(id: i32) -> Self {
         Self {
             id,
@@ -133,9 +151,9 @@ impl Packet {
         }
     }
 
-    // Send the packet on some writer.
-    // This method doesn't need to consume self, but it does since packets should not be reused.
-    pub fn send<T: Write>(self, writer: &mut T) -> Result<()> {
+    /// Send the packet on writer.
+    /// This method doesn't need to consume self, but it does since packets should not be reused.
+    fn send<T: Write>(self, writer: &mut T) -> Result<()> {
         // Write the size i32 as 4 little-endian bytes.
         writer.write(&self.size()?.to_le_bytes())?;
         // Write the id i32 as 4 little-endian bytes.
@@ -149,7 +167,7 @@ impl Packet {
         Ok(())
     }
 
-    // Read a packet from some reader.
+    /// Attempt to read a packet from reader. In the standard use case, reader will be a TCP stream connected to the server.
     pub fn receive<T: Read>(reader: &mut T) -> Result<Self> {
         // Create a 4-byte buffer. This will be used for reading in all i32s.
         let mut buf = [0; 4];
@@ -185,12 +203,14 @@ impl Packet {
     }
 }
 
-// A struct representing a connection to a Minecraft server.
+/// A connection to a Minecraft server.
 pub struct Connection<T> {
     connection: T,
 }
 
 impl<T: Read + Write> Connection<T> {
+    /// Create a `Connection` to a server. In the standard use case, the supplied connection should be a TCP stream connected to the server.
+    /// The RCON password specified in server.properties must also be supplied to authenticate the connection.
     pub fn connect(mut connection: T, password: String) -> Result<Self> {
         // Construct a login packet, save the id, and send it to the server.
         let packet = Packet::new(PacketType::Login, password)?;
@@ -204,6 +224,7 @@ impl<T: Read + Write> Connection<T> {
         }
     }
 
+    /// Execute a given command on the Minecraft server that self is connected to.
     pub fn command(&mut self, command: String) -> Result<Packet> {
         // Construct a command packet, save the id, and send it to the server.
         let packet = Packet::new(PacketType::Command, command)?;
