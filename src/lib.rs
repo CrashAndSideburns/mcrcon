@@ -26,7 +26,7 @@ use std::{
 
 // Both incoming and outgoing packets have a maximum payload size.
 // https://wiki.vg/RCON#Fragmentation
-const MAX_INCOMING_PAYLOAD: usize = 4096;
+const MAX_INCOMING_SIZE: i32 = 4110;
 const MAX_OUTGOING_PAYLOAD: usize = 1446;
 
 /// An RCON error.
@@ -35,9 +35,10 @@ pub enum RCONError {
     /// Represents either an authentication failure when attempting to create a connection with `Connection::connect`,
     /// or a command sent to the server with `Connection::command` failing to execute due to the connection not being authenticated.
     AuthFail,
-    /// Represents either a client attempt to create or send a packet with a payload larger than 1446 bytes,
-    /// or a read packet having a size less than 10 or greater than 4110 bytes.
-    BadSize(usize),
+    /// Represents a client attempt to create or send a packet with a payload larger than 1446 bytes.
+    PayloadTooLarge(usize),
+    /// Represents a packet received from the server indicating a size either less than 10 bytes or more than 4110 bytes.
+    BadSize(i32),
     /// Represents a packet whose payload is not a valid UTF-8 encoded string.
     BadPayload(string::FromUtf8Error),
     /// Represents the ID of a response packet sent by the server not matching the ID of the sent packet.
@@ -63,18 +64,25 @@ impl fmt::Display for RCONError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::AuthFail => {
-                write!(f, "Authentication failed.")
+                write!(f, "Authentication failed")
             }
+            Self::PayloadTooLarge(size) => {
+                write!(
+                    f,
+                    "The size of the supplied payload {} exceeds the maximum payload size of {}",
+                    size, MAX_OUTGOING_PAYLOAD
+                )
+            },
             Self::BadSize(size) => {
                 write!(
                     f,
-                    "The size of the supplied payload {} exceeds that maximum payload size of {}",
-                    size, MAX_OUTGOING_PAYLOAD
+                    "The size of the incoming packet {} exceeds the maximum size of {}",
+                    size, MAX_INCOMING_SIZE
                 )
             }
             Self::BadPayload(_) => write!(f, "Bad payload"),
             Self::IDMismatch => {
-                write!(f, "The ID of the packet received from the server does not match the ID of the sent packet.")
+                write!(f, "The ID of the packet received from the server does not match the ID of the sent packet")
             }
             Self::IO(_) => write!(f, "IO error"),
         }
@@ -127,7 +135,7 @@ impl Packet {
                 payload,
             })
         } else {
-            Err(RCONError::BadSize(payload.len()))
+            Err(RCONError::PayloadTooLarge(payload.len()))
         }
     }
 
@@ -138,7 +146,7 @@ impl Packet {
             // The cast from usize to i32 is always safe, since we know here that the length of the payload is in [0, 1446].
             Ok(self.payload.len() as i32 + 10)
         } else {
-            Err(RCONError::BadSize(self.payload.len()))
+            Err(RCONError::PayloadTooLarge(self.payload.len()))
         }
     }
 
@@ -175,6 +183,10 @@ impl Packet {
         // Read the first 4 bytes into the buffer. This is the size of the packet as a little-endian i32.
         reader.read_exact(&mut buf)?;
         let size = i32::from_le_bytes(buf);
+        // Return RCONError::BadSize if size is not in [10, 4110].
+        if size < 10 || size > MAX_INCOMING_SIZE {
+            return Err(RCONError::BadSize(size));
+        }
 
         // Read the next 4 bytes into the buffer. This is the id of the packet as a little-endian i32.
         reader.read_exact(&mut buf)?;
@@ -185,7 +197,7 @@ impl Packet {
         let packet_type = i32::from_le_bytes(buf);
 
         // Create a Vec to hold the payload. The size of the Vec is size - 10 (8 bytes for the id and type, plus 2 null bytes).
-        // Currently this panics if size < 10. This should never be the case, but error handling should be added.
+        // The conversion to usize should never fail, since we have previously verified that size is in [10, 4110].
         let mut payload = vec![0; (size - 10).try_into().unwrap()];
 
         // Read the payload of the packet into the Vec, then convert into a String.
