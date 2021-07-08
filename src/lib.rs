@@ -39,6 +39,8 @@ pub enum RCONError {
     PayloadTooLarge(usize),
     /// Represents a packet received from the server indicating a size either less than 10 bytes or more than 4110 bytes.
     BadSize(i32),
+    /// Represents a packet received from the server whose ID is not one of -1, 0, or 2.
+    BadPacketType(i32),
     /// Represents a packet whose payload is not a valid UTF-8 encoded string.
     BadPayload(string::FromUtf8Error),
     /// Represents the ID of a response packet sent by the server not matching the ID of the sent packet.
@@ -78,6 +80,13 @@ impl fmt::Display for RCONError {
                     f,
                     "The size of the incoming packet {} exceeds the maximum size of {}",
                     size, MAX_INCOMING_SIZE
+                )
+            }
+            Self::BadPacketType(packet_type) => {
+                write!(
+                    f,
+                    "The type {} of the incoming packet is not a valid type for an incoming packet",
+                    packet_type
                 )
             }
             Self::BadPayload(_) => write!(f, "Bad payload"),
@@ -207,11 +216,19 @@ impl Packet {
         // Read the two null bytes into a dummy buffer to clear the stream.
         reader.read_exact(&mut [0; 2])?;
 
-        Ok(Self {
-            id,
-            packet_type,
-            payload,
-        })
+        match packet_type {
+            -1 => {
+                Err(RCONError::AuthFail)
+            },
+            0 | 2 => {
+                Ok(Self {
+                    id,
+                    packet_type,
+                    payload,
+                })
+            }
+            other_type => Err(RCONError::BadPacketType(other_type))
+        }
     }
 }
 
