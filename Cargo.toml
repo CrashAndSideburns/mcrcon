@@ -3,6 +3,11 @@ name = "mcrcon"
 version = "0.1.0"
 authors = ["Morgan Arnold <morgan.r.arnold@outlook.com>"]
 edition = "2018"
+license = "Unlicense"
+description = "An impelementation of Minecraft's RCON protocol."
+repository = "https://github.com/CrashAndSideburns/mcrcon"
+readme = "README.md"
+keywords = ["Minecraft", "RCON"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
